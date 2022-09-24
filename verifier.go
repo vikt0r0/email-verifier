@@ -48,6 +48,14 @@ func NewVerifier() *Verifier {
 	}
 }
 
+// NewVerifier creates a new email verifier
+func NewVerifierWithEmailAndName(name, email string) *Verifier {
+	return &Verifier{
+		fromEmail: email,
+		helloName: name,
+	}
+}
+
 // Verify performs address, misc, mx and smtp checks
 func (v *Verifier) Verify(email string) (*Result, error) {
 
