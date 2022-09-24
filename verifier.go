@@ -49,7 +49,7 @@ func NewVerifier() *Verifier {
 }
 
 // NewVerifier creates a new email verifier
-func NewVerifierWithEmailAndName(name, email string) *Verifier {
+func NewVerifierWithEmailAndName(email, name string) *Verifier {
 	return &Verifier{
 		fromEmail: email,
 		helloName: name,
