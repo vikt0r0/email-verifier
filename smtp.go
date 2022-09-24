@@ -21,45 +21,49 @@ type SMTP struct {
 	Disabled    bool `json:"disabled"`    // is the email blocked or disabled by the provider?
 }
 
-// CheckSMTP performs an email verification on the passed domain via SMTP
-//  - the domain is the passed email domain
-//  - username is used to check the deliverability of specific email address,
-// if server is catch-all server, username will not be checked
-func (v *Verifier) CheckSMTP(domain, username string) (*SMTP, error) {
-	if !v.smtpCheckEnabled {
-		return nil, nil
-	}
-
-	var ret SMTP
-
+// Create a new client which is connected to the SMTP server awaiting RCPT
+func (v *Verifier) GetClient(domain string) (*smtp.Client, error) {
 	// Dial any SMTP server that will accept a connection
 	client, err := newSMTPClient(domain, v.proxyURI)
+
 	if err != nil {
-		return &ret, ParseSMTPError(err)
+		return client, ParseSMTPError(err)
 	}
 
 	// Sets the HELO/EHLO hostname
 	if err := client.Hello(v.helloName); err != nil {
-		return &ret, ParseSMTPError(err)
+		return client, ParseSMTPError(err)
 	}
 
 	// Sets the from email
 	if err := client.Mail(v.fromEmail); err != nil {
-		return &ret, ParseSMTPError(err)
+		return client, ParseSMTPError(err)
 	}
 
-	// Defer quit the SMTP connection
-	defer client.Close()
+	return client, nil
+}
 
-	// Host exists if we've successfully formed a connection
-	ret.HostExists = true
+// Checks the deliver ability of a randomly generated address in
+// order to verify the existence of a catch-all and etc.
+func (v *Verifier) CheckCatchAll(domain string, ret *SMTP) error {
+
+	randomEmail := GenerateRandomEmail(domain)
+
+	client, err := v.GetClient(domain)
+
+	if err != nil {
+		return ParseSMTPError(err)
+	}
 
 	// Default sets catch-all to true
 	ret.CatchAll = true
 
-	// Checks the deliver ability of a randomly generated address in
-	// order to verify the existence of a catch-all and etc.
-	randomEmail := GenerateRandomEmail(domain)
+	// Host exists if we've successfully formed a connection
+	ret.HostExists = true
+
+	// Defer quit the SMTP connection
+	defer client.Close()
+
 	if err := client.Rcpt(randomEmail); err != nil {
 		if e := ParseSMTPError(err); e != nil {
 			switch e.Message {
@@ -72,10 +76,51 @@ func (v *Verifier) CheckSMTP(domain, username string) (*SMTP, error) {
 			case ErrServerUnavailable:
 				ret.CatchAll = false
 			default:
-
 			}
-
 		}
+	}
+
+	return nil
+}
+
+func (v *Verifier) CheckSMTPPresence(domain, username string, ret *SMTP) error {
+
+	client, err := v.GetClient(domain)
+
+	if err != nil {
+		return ParseSMTPError(err)
+	}
+
+	// Host exists if we've successfully formed a connection
+	ret.HostExists = true
+
+	// Defer quit the SMTP connection
+	defer client.Close()
+
+	email := fmt.Sprintf("%s@%s", username, domain)
+	if err := client.Rcpt(email); err == nil {
+		ret.Deliverable = true
+	}
+
+	return nil
+}
+
+// CheckSMTP performs an email verification on the passed domain via SMTP
+//   - the domain is the passed email domain
+//   - username is used to check the deliverability of specific email address,
+//
+// if server is catch-all server, username will not be checked
+func (v *Verifier) CheckSMTP(domain, username string) (*SMTP, error) {
+	if !v.smtpCheckEnabled {
+		return nil, nil
+	}
+
+	var ret SMTP
+
+	var err = v.CheckCatchAll(domain, &ret)
+
+	if err != nil {
+		return &ret, err
 	}
 
 	// If the email server is a catch-all email server or no username provided,
@@ -84,9 +129,18 @@ func (v *Verifier) CheckSMTP(domain, username string) (*SMTP, error) {
 		return &ret, nil
 	}
 
-	email := fmt.Sprintf("%s@%s", username, domain)
-	if err := client.Rcpt(email); err == nil {
-		ret.Deliverable = true
+	// Otherwise close and reopen the connection! Since otherwise we
+	// add multiple recipients, and the server will return something
+	// like:
+	// 452 4.5.3 Recipients belong to multiple regions ATTR38
+	// [DM3NAM02FT039.eop-nam02.prod.protection.outlook.com]
+	// This is particularly the case for Microsoft Mail Servers!
+	err = v.CheckSMTPPresence(domain, username, &ret)
+
+	// VRFY doesn't really work, so check by actually sending a mail, or maybe that's a bad approach too.
+
+	if err != nil {
+		return &ret, err
 	}
 
 	return &ret, nil
@@ -101,7 +155,7 @@ func newSMTPClient(domain, proxyURI string) (*smtp.Client, error) {
 	}
 
 	if len(mxRecords) == 0 {
-		return nil, errors.New("No MX records found")
+		return nil, errors.New("no MX records found")
 	}
 	// Create a channel for receiving response from
 	ch := make(chan interface{}, 1)
@@ -151,7 +205,7 @@ func newSMTPClient(domain, proxyURI string) (*smtp.Client, error) {
 				return nil, errs[0]
 			}
 		default:
-			return nil, errors.New("Unexpected response dialing SMTP server")
+			return nil, errors.New("unexpected response dialing SMTP server")
 		}
 	}
 
@@ -197,10 +251,10 @@ func dialSMTP(addr, proxyURI string) (*smtp.Client, error) {
 		case error:
 			return nil, r
 		default:
-			return nil, errors.New("Unexpected response dialing SMTP server")
+			return nil, errors.New("unexpected response dialing SMTP server")
 		}
 	case <-time.After(smtpTimeout):
-		return nil, errors.New("Timeout connecting to mail-exchanger")
+		return nil, errors.New("timeout connecting to mail-exchanger")
 	}
 }
 
